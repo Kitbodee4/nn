@@ -1,0 +1,844 @@
+from loguru import logger
+import pandas as pd
+
+# Configure loguru
+logger.remove()
+logger.add("structure_mapping.log", rotation="1 MB", format="{time} | {level} | {message}")
+logger.add("structure_mapping_debug.log", rotation="1 MB", format="{time} | {message}")
+
+# Global variables
+structArr = []
+structTimeArr = []
+structPriceArr = []
+structBarArr = []
+obArray = []
+lookback = 4
+
+# Input parameters
+equalHL = False
+showHL = True
+showMn = False
+showBC = True
+showIDM = False
+showliveIDM = True
+showSw = False
+markX = False
+
+# Initialize state variables
+mnUp = None
+mnDn = None
+top = None
+bot = None
+puUp = None
+puDn = None
+L = None
+H = None
+idmB = None
+idmS = None
+lastH = None
+lastL = None
+lastHH = None
+lastLL = None
+puUp_time = None
+puDn_time = None
+idmB_time = None
+idmS_time = None
+H_time = None
+L_time = None
+lastH_time = None
+lastL_time = None
+lastHH_time = None
+lastLL_time = None
+isBosUp = False
+isBosDn = False
+isCocUp = True
+isCocDn = True
+df = None  # Global DataFrame
+
+# Utility functions
+def is_na(value):
+    return value is None
+
+def f_get50PctLine(priceA, priceB):
+    return (priceA + priceB) / 2.0
+
+# OBData class
+class OBData:
+    def __init__(self, bar_time, topPrice, bottomPrice, isMajorUp):
+        self.bar_time = bar_time
+        self.topPrice = topPrice
+        self.bottomPrice = bottomPrice
+        self.isMajorUp = isMajorUp
+
+# Load data from CSV
+def load_ohlcv(file_path="15m.csv"):
+    try:
+        df = pd.read_csv(file_path, usecols=['open_time', 'open', 'high', 'low', 'close', 'volume'])
+        df = df.rename(columns={'open_time': 'timestamp'})
+        required_columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        if not all(col in df.columns for col in required_columns):
+            missing_cols = [col for col in required_columns if col not in df.columns]
+            logger.error(f"Missing required columns: {missing_cols}")
+            raise ValueError(f"CSV must contain columns: {required_columns}")
+        try:
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        except ValueError:
+            try:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            except ValueError as e:
+                logger.error(f"Failed to parse timestamp column: {e}")
+                raise ValueError("Timestamp column must be in a valid datetime format")
+        if df[required_columns].isnull().any().any():
+            logger.warning("CSV contains missing values; dropping rows with NaN")
+            df = df.dropna(subset=required_columns)
+        df = df.reset_index(drop=True)
+        time_diff = df['timestamp'].diff().dropna()
+        expected_diff = pd.Timedelta(minutes=15)
+        if not (time_diff == expected_diff).all():
+            logger.warning("Data contains gaps or irregular timestamps")
+        logger.info(f"Successfully loaded {len(df)} 15-minute bars from {file_path}")
+        return df
+    except FileNotFoundError:
+        logger.error(f"CSV file not found: {file_path}")
+        raise
+    except pd.errors.ParserError:
+        logger.error(f"Failed to parse CSV file: {file_path}")
+        raise
+    except Exception as e:
+        logger.error(f"Error loading CSV file: {e}")
+        raise
+
+# Helper functions
+def f_loginfo(message):
+    logger.info(message)
+
+def f_storeOB(isMajorUp, topPrice, bottomPrice, current_time=None):
+    newOB = OBData(
+        bar_time=current_time if current_time is not None else 0,
+        topPrice=topPrice,
+        bottomPrice=bottomPrice,
+        isMajorUp=isMajorUp
+    )
+    obArray.insert(0, newOB)
+    log_text = f"f_storeOB -> {'Bullish' if isMajorUp else 'Bearish'} top={topPrice} bottom={bottomPrice}"
+    f_loginfo(log_text)
+    return [isMajorUp, bottomPrice, topPrice]
+
+def f_findFirstHigherHigh(currentHigh, lookback_in, refBar, df):
+    firstHigherHigh = None
+    firstbarH = None
+    for i in range(1, lookback_in + 1):
+        checkBar = refBar - i
+        if checkBar >= 0 and checkBar < len(df):
+            histHigh = df.loc[checkBar, 'high']
+            if histHigh > currentHigh:
+                firstHigherHigh = histHigh
+                firstbarH = checkBar
+                break
+    return [firstHigherHigh, firstbarH]
+
+def f_findFirstLowerLow(currentLow, lookback_in, refBar, df):
+    firstLowerLow = None
+    firstbarL = None
+    for i in range(1, lookback_in + 1):
+        checkBar = refBar - i
+        if checkBar >= 0 and checkBar < len(df):
+            histLow = df.loc[checkBar, 'low']
+            if histLow < currentLow:
+                firstLowerLow = histLow
+                firstbarL = checkBar
+                break
+    return [firstLowerLow, firstbarL]
+# Modified functions
+def f_drawStructBox(df, current_row, previous_row):
+    if len(structArr) > 5:
+        prevS = structArr[-2]
+        currS = structArr[-1]
+        prevBar = structBarArr[-2]
+        currBar = structBarArr[-1]
+        prevPr = structPriceArr[-2]
+        currPr = structPriceArr[-1]
+        prevpr2 = structPriceArr[-3]
+        currBar2 = structBarArr[-3]
+        prevS2 = structArr[-3]
+        prevS3 = structArr[-4]
+        prevpr3 = structPriceArr[-4]
+        prevpr4 = structPriceArr[-5]
+        if currBar < len(df):
+            f_checkMajorOrMinor(prevS, prevS2, currS, prevBar, currBar, prevPr, currPr, prevpr2, currBar2, df, current_row, previous_row)
+            f_zoneChocDown(prevS, prevS2, currS, prevBar, currBar, prevPr, currPr, prevpr2, currBar2, prevpr3, prevS3, prevpr4, df, current_row, previous_row)
+            f_zoneChocUp(prevS, prevS2, currS, prevBar, currBar, prevPr, currPr, prevpr2, currBar2, prevpr3, prevS3, prevpr4, df, current_row, previous_row)
+        else:
+            logger.error(f"Invalid curBar index: {currBar}")
+        structArr.pop(0)
+        structTimeArr.pop(0)
+        structPriceArr.pop(0)
+        structBarArr.pop(0)
+
+def BoS_ChoCh(B_C: bool, UpDn: bool, current_time, current_close):
+    global lastHH, lastH, lastLL, lastL, lastHH_time, lastH_time, lastLL_time, lastL_time
+    if B_C and UpDn:
+        event_price = lastHH
+        event_time = lastHH_time
+        event_text = "BoS Up"
+    elif (not B_C) and UpDn:
+        event_price = lastH
+        event_time = lastH_time
+        event_text = "ChoCh Up"
+    elif (not B_C) and (not UpDn):
+        event_price = lastL
+        event_time = lastL_time
+        event_text = "ChoCh Down"
+    else:
+        event_price = lastLL
+        event_time = lastLL_time
+        event_text = "BoS Down"
+    if showBC:
+        logger.info(f"{event_text} at time {event_time} -> signaled at {current_time}, price = {event_price}, close = {current_close}")
+
+def sweep(swHL: bool, swHrLr: bool, current_time):
+    global lastHH, lastH, lastLL, lastL, lastHH_time, lastH_time, lastLL_time, lastL_time
+    if not showSw:
+        return
+    if swHL and swHrLr:
+        event_price = lastHH
+        event_label = "HH"
+        event_time = lastHH_time
+    elif swHL and (not swHrLr):
+        event_price = lastH
+        event_label = "LH"
+        event_time = lastH_time
+    elif (not swHL) and swHrLr:
+        event_price = lastL
+        event_label = "HL"
+        event_time = lastL_time
+    else:
+        event_price = lastLL
+        event_label = "LL"
+        event_time = lastLL_time
+    if markX:
+        logger.debug(f"Sweep event: {event_label}, from time {event_time} to time {current_time}, price {event_price}.")
+
+def IDM(BS: bool, current_time):
+    global idmB, idmS, idmB_time, idmS_time
+    if not showIDM:
+        return
+    if BS:
+        logger.info(f"IDM (Bullish) at time {idmB_time} -> signaled at {current_time}, price {idmB}.")
+    else:
+        logger.info(f"IDM (Bearish) at time {idmS_time} -> signaled at {current_time}, price {idmS}.")
+
+def mnMark(UD: bool, current_time):
+    global puUp, puDn, puUp_time, puDn_time
+    if not showMn:
+        return
+    if UD:
+        logger.debug(f"Minor Up Pivot at {puUp_time}, price {puUp}, triggered at {current_time}.")
+    else:
+        logger.debug(f"Minor Down Pivot at {puDn_time}, price {puDn}, triggered at {current_time}.")
+def cfHL(isHigh: bool, current_time, current_high, current_low, current_close, bar_index, current_row, previous_row):
+    global H, L, H_time, L_time, lastHH, lastLL, lastHH_time, lastLL_time
+    global structArr, structTimeArr, structPriceArr, structBarArr
+    if isHigh:
+        actual_high = current_high if (current_high > H) else H
+        label_txt = "HH" if H == lastHH else "LH"
+        if showHL:
+            logger.debug(f"Detected {label_txt} at time {current_time}, price {actual_high}.")
+        structArr.append(label_txt)
+        structTimeArr.append(current_time)
+        structPriceArr.append(actual_high)
+        structBarArr.append(bar_index)
+        f_drawStructBox(df, current_row, previous_row)
+    else:
+        actual_low = current_low if (current_low < L) else L
+        label_txt = "LL" if L == lastLL else "HL"
+        if showHL:
+            logger.debug(f"Detected {label_txt} at time {current_time}, price {actual_low}.")
+        structArr.append(label_txt)
+        structTimeArr.append(current_time)
+        structPriceArr.append(actual_low)
+        structBarArr.append(bar_index)
+        f_drawStructBox(df, current_row, previous_row)
+
+def f_checkMajorOrMinor(prevS, prevS2, curS, prevBar, curBar, prevPr, curPr, prevpr2, currBar2, df, current_row, previous_row):
+    zoneRetUp = (prevS == "HL" and curS == "HH")
+    zoneRetDown = (prevS == "LH" and curS == "LL")
+    zonechocdn = (prevS == "HH" and curS == "LL")
+    zonechocup = (prevS == "LL" and curS == "HH")
+    up = None
+    lll = None
+    dn = None
+    hhh = None
+    con1 = False
+    con2 = False
+    isMajor = False
+    count = 0
+    countu = 0
+    chk_l = False
+    chk_h = False
+    waitingForHL = False
+    waitingForLH = False
+
+    if zonechocdn or zonechocup:
+        con1 = False
+        con2 = False
+        waitingForHL = False
+        waitingForLH = False
+
+    if zoneRetUp and not isMajor:
+        halfLine = f_get50PctLine(prevPr, curPr)
+        if current_row is not None and previous_row is not None:
+            low_now = current_row['low']
+            low_prev = previous_row['low']
+            open_now = current_row['open']
+            open_prev = previous_row['open']
+            close_now = current_row['close']
+            close_prev = previous_row['close']
+            if low_now < halfLine and low_prev > halfLine and not chk_l:
+                chk_l = True
+                lll = low_now
+                f_loginfo(f"rethigh > halfLine {halfLine}")
+            if lll is not None and low_now < lll:
+                lll = low_now
+                f_loginfo(f"rethigh < hhh {lll}")
+            if lll is not None and curBar >= 2:
+                if low_now < lll and close_now < halfLine:
+                    up = "waiting candle2"
+                    countu += 1
+                    f_loginfo(f"waitingretup {halfLine} count {countu}")
+            if countu >= 1:
+                if (close_prev < open_prev) and (close_now > open_now) \
+                   and (open_now <= close_prev) and (close_now >= open_prev):
+                    countu -= 1
+                    f_loginfo(f"engulfretup {count}")
+            if countu >= 2:
+                f_loginfo(f"countt {count}")
+                con1 = True
+            if con1:
+                chk_l = False
+            if prevpr2 is not None and low_now < prevpr2:
+                con2 = True
+            f_loginfo(f"** Condition1up => {con1} ** Condition2 => {con2} ** Condition3 => {close_now}")
+            isMajor = con1 and con2
+            if isMajor:
+                waitingForHL = True
+        else:
+            logger.warning("Missing current or previous row data in f_checkMajorOrMinor")
+
+    if waitingForHL and curS == "HH" and prevS == "HH":
+        isMajor = False
+        waitingForHL = False
+        con1 = False
+        con2 = False
+
+    if waitingForHL and curS == "HL":
+        waitingForHL = False
+        currentHigh = current_row['high'] if current_row is not None else None
+        if currentHigh is not None:
+            [firstHigherHigh, firstbarH] = f_findFirstHigherHigh(currentHigh, lookback, curBar, df)
+            if not is_na(firstHigherHigh) and not is_na(firstbarH):
+                f_loginfo(f"** Found Higher High: firstHigherHigh={firstHigherHigh} at bar={firstbarH}")
+                topOB = firstHigherHigh
+                bottomOB = curPr
+                current_time = current_row['timestamp'] if current_row is not None else None
+                f_storeOB(True, topOB, bottomOB, current_time)
+                f_loginfo(f"** Confirmed Major with HL => {curS}")
+
+    if isMajor and curS == "LL":
+        isMajor = False
+        waitingForHL = False
+        f_loginfo(f"** Major invalidated due to LL => {curS}")
+
+    if not zoneRetUp:
+        countu = 0
+        isMajor = False
+        con1 = False
+        con2 = False
+
+    if zoneRetDown and not isMajor:
+        halfLine = f_get50PctLine(prevPr, curPr)
+        if current_row is not None and previous_row is not None:
+            high_now = current_row['high']
+            high_prev = previous_row['high']
+            open_now = current_row['open']
+            open_prev = previous_row['open']
+            close_now = current_row['close']
+            close_prev = previous_row['close']
+            if high_now > halfLine and high_prev < halfLine and not chk_h:
+                chk_h = True
+                hhh = high_now
+                f_loginfo(f"retdn < halfLine {halfLine}")
+            if hhh is not None and high_now > hhh:
+                hhh = high_now
+                f_loginfo(f"retdn > hhh {hhh}")
+            if curBar >= 2 and hhh is not None:
+                if close_now > hhh and close_now > halfLine:
+                    dn = "waiting candle2"
+                    count += 1
+                    f_loginfo(f"waitingretdn {halfLine} count {count}")
+            if count > 0:
+                if (close_prev > open_prev) and (close_now < open_now) \
+                   and (open_now >= close_prev) and (close_now <= open_prev):
+                    count -= 1
+                    f_loginfo(f"engulf {count}")
+            if count >= 2:
+                f_loginfo(f"counttdn {count}")
+                count = 0
+                con1 = True
+            if con1:
+                chk_h = False
+            if high_now > prevpr2:
+                con2 = True
+            f_loginfo(f"** Condition1dn => {con1} ** Condition2 => {con2} ** Condition3 => {close_now}")
+            isMajor = con1 and con2
+            if isMajor:
+                waitingForLH = True
+        else:
+            logger.warning("Missing current or previous row data in f_checkMajorOrMinor")
+
+    if waitingForLH and curS == "LL" and prevS == "LL":
+        isMajor = False
+        waitingForLH = False
+        con1 = False
+        con2 = False
+
+    if waitingForLH and curS == "LH":
+        waitingForLH = False
+        currentLow = current_row['low'] if current_row is not None else None
+        if currentLow is not None:
+            [firstLowerLow, firstbarL] = f_findFirstLowerLow(currentLow, lookback, curBar, df)
+            if not is_na(firstLowerLow) and not is_na(firstbarL):
+                bottomOB = firstLowerLow
+                topOB = curPr
+                current_time = current_row['timestamp'] if current_row is not None else None
+                f_storeOB(False, topOB, bottomOB, current_time)
+            if not is_na(firstbarL) and firstbarL == curBar:
+                bottomOB = firstLowerLow
+                topOB = curPr
+                current_time = current_row['timestamp'] if current_row is not None else None
+                f_storeOB(False, topOB, bottomOB, current_time)
+            f_loginfo(f"** Confirmed Major with LH => {curS}")
+
+    if isMajor and curS == "HH":
+        isMajor = False
+        waitingForLH = False
+        f_loginfo(f"** Major invalidated due to HH => {curS}")
+
+    if not zoneRetDown:
+        count = 0
+        isMajor = False
+        con1 = False
+        con2 = False
+
+    return isMajor
+
+def f_zoneChocUp(prevS, prevS2, curS, prevBar, curBar, prevPr, curPr, prevpr2, currBar2, prevpr3, prevS3, prevpr4, df, current_row, previous_row):
+    isMajor = False
+    con1 = False
+    con2 = False
+    count = 0
+    chk_l = False
+    lll = None
+    up = None
+    waitingForHL = False
+    pre = 0
+    zoneChocUp = (prevS == "LL" and curS == "HH")
+
+    if zoneChocUp and not isMajor:
+        halfLine = f_get50PctLine(prevPr, curPr)
+        if current_row is not None and previous_row is not None:
+            low_now = current_row['low']
+            low_prev = previous_row['low']
+            open_now = current_row['open']
+            open_prev = previous_row['open']
+            close_now = current_row['close']
+            close_prev = previous_row['close']
+            if low_now < halfLine and low_prev > halfLine and not chk_l:
+                chk_l = True
+                lll = low_now
+                f_loginfo(f"chochigh > halfLine {halfLine}")
+            if lll is not None and low_now < lll:
+                lll = low_now
+                f_loginfo(f"chhigh < hhh {lll}")
+            if lll is not None and curBar >= 2:
+                if close_now < close_prev and close_now < halfLine:
+                    up = "waiting candle2"
+                    count += 1
+                    f_loginfo(f"waitingchocup {lll} count {halfLine} count {count}")
+            if count >= 1:
+                if (close_prev < open_prev) and (close_now > open_now) \
+                   and (open_now <= close_prev) and (close_now >= open_prev):
+                    count -= 1
+                    f_loginfo(f"engulfchup {count}")
+            if count >= 2:
+                f_loginfo(f"counttchup {count}")
+                con1 = True
+            pre = prevpr3
+            if prevpr3 < prevpr4:
+                pre = prevpr4
+            if low_now < pre:
+                con2 = True
+            if con1:
+                chk_l = False
+            f_loginfo(f"** Condition1chocup => {con1} ** Condition2 => {con2} ** Condition3 => {prevpr3}")
+            isMajor = con1 and con2
+            if isMajor:
+                waitingForHL = True
+                con1 = False
+                con2 = False
+                count = 0
+                halfLine = None
+                f_loginfo("majorrchup")
+        else:
+            logger.warning("Missing current or previous row data in f_zoneChocUp")
+
+    if waitingForHL and curS == "HL":
+        isMajor = False
+        waitingForHL = False
+        count = 0
+        currentHigh = current_row['high'] if current_row is not None else None
+        if currentHigh is not None:
+            [firstHigherHigh, firstbarH] = f_findFirstHigherHigh(currentHigh, lookback, curBar, df)
+            if not is_na(firstHigherHigh) and not is_na(firstbarH):
+                f_loginfo(f"** Found Higher High: firstHigherHigh={firstHigherHigh} at bar={firstbarH}")
+                topOB = firstHigherHigh
+                bottomOB = curPr
+                current_time = current_row['timestamp'] if current_row is not None else None
+                f_storeOB(True, topOB, bottomOB, current_time)
+                f_loginfo(f"** Confirmed Major ChocUp with HL => {curBar}")
+
+    if waitingForHL and curS == "HH" and prevS == "HH":
+        isMajor = False
+        waitingForHL = False
+        con1 = False
+        con2 = False
+        count = 0
+
+    if isMajor and curS == "LL":
+        isMajor = False
+        waitingForHL = False
+        f_loginfo(f"** Major ChocUp invalidated due to LL => {curS}")
+
+    if not zoneChocUp:
+        count = 0
+        isMajor = False
+        con1 = False
+        con2 = False
+
+    return isMajor
+
+def f_zoneChocDown(prevS, prevS2, curS, prevBar, curBar, prevPr, curPr, prevpr2, currBar2, prevpr3, prevS3, prevpr4, df, current_row, previous_row):
+    isMajor = False
+    con1 = False
+    con2 = False
+    count = 0
+    chk_h = False
+    hhh = None
+    dn = None
+    waitingForLH = False
+    pre = 0
+    zoneChocDown = (prevS == "HH" and curS == "LL")
+
+    if zoneChocDown and not isMajor:
+        halfLine = f_get50PctLine(prevPr, curPr)
+        if current_row is not None and previous_row is not None:
+            high_now = current_row['high']
+            high_prev = previous_row['high']
+            open_now = current_row['open']
+            open_prev = previous_row['open']
+            close_now = current_row['close']
+            close_prev = previous_row['close']
+            if high_now > halfLine and high_prev < halfLine and not chk_h:
+                chk_h = True
+                hhh = high_now
+                f_loginfo(f"chocdn < halfLine {halfLine}")
+            if hhh is not None and high_now > hhh:
+                hhh = high_now
+                f_loginfo(f"highdn > hhh {hhh}")
+            if curBar >= 2 and hhh is not None:
+                if close_now > close_prev and close_now > halfLine:
+                    dn = "waiting candle2"
+                    count += 1
+                    f_loginfo(f"waitingchocdn {hhh} count {halfLine} half {count}")
+            if count > 0 and close_prev > hhh and close_now < hhh:
+                if (close_prev > open_prev) and (close_now < open_now) \
+                   and (open_now >= close_prev) and (close_now <= open_prev):
+                    count -= 1
+                    f_loginfo(f"engulf {count}")
+            if count >= 2:
+                f_loginfo(f"countt {count}")
+                count = 0
+                con1 = True
+            if con1:
+                chk_h = False
+            pre = prevpr3
+            if prevpr3 > prevpr4:
+                pre = prevpr4
+            if high_now > prevpr3:
+                con2 = True
+            f_loginfo(f"** Condition1chocdn => {con1} ** Condition2 => {con2} ** Condition3 => {count}")
+            isMajor = con1 and con2
+            if isMajor:
+                waitingForLH = True
+                con1 = False
+                con2 = False
+                count = 0
+                halfLine = None
+                f_loginfo("confi")
+        else:
+            logger.warning("Missing current or previous row data in f_zoneChocDown")
+
+    if waitingForLH and curS == "LH":
+        isMajor = False
+        waitingForLH = False
+        count = 0
+        currentLow = current_row['low'] if current_row is not None else None
+        if currentLow is not None:
+            [firstLowerLow, firstbarL] = f_findFirstLowerLow(currentLow, lookback, curBar, df)
+            if not is_na(firstLowerLow) and not is_na(firstbarL):
+                bottomOB = firstLowerLow
+                topOB = curPr
+                current_time = current_row['timestamp'] if current_row is not None else None
+                f_storeOB(False, topOB, bottomOB, current_time)
+            if not is_na(firstbarL) and firstbarL == curBar:
+                bottomOB = firstLowerLow
+                topOB = curPr
+                current_time = current_row['timestamp'] if current_row is not None else None
+                f_storeOB(False, topOB, bottomOB, current_time)
+            f_loginfo(f"** Confirmed Major ChocDown with LH => {curS}")
+
+    if waitingForLH and curS == "LL" and prevS == "LL":
+        isMajor = False
+        waitingForLH = False
+        con1 = False
+        con2 = False
+
+    if isMajor and curS == "HH":
+        isMajor = False
+        waitingForLH = False
+        f_loginfo(f"** Major ChocDown invalidated due to HH => {curS}")
+
+    if not zoneChocDown:
+        count = 0
+        isMajor = False
+        con1 = False
+        con2 = False
+
+    return isMajor
+
+def main():
+    global df, mnUp, mnDn, top, bot, puUp, puDn, L, H, idmB, idmS, lastH, lastL, lastHH, lastLL
+    global puUp_time, puDn_time, idmB_time, idmS_time, H_time, L_time, lastH_time, lastL_time, lastHH_time, lastLL_time
+    global isBosUp, isBosDn, isCocUp, isCocDn
+    try:
+        df = load_ohlcv("15m.csv")
+        if len(df) == 0:
+            logger.error("Empty DataFrame loaded")
+            return
+        first_row = df.iloc[0]
+        top = first_row['high']
+        bot = first_row['low']
+        puUp = first_row['high']
+        puDn = first_row['low']
+        H = first_row['high']
+        L = first_row['low']
+        idmB = first_row['low']
+        idmS = first_row['high']
+        lastH = first_row['high']
+        lastL = first_row['low']
+        lastHH = first_row['high']
+        lastLL = first_row['low']
+        t = first_row['timestamp']
+        puUp_time = t
+        puDn_time = t
+        H_time = t
+        L_time = t
+        idmB_time = t
+        idmS_time = t
+        lastH_time = t
+        lastL_time = t
+        lastHH_time = t
+        lastLL_time = t
+        mnUp = False
+        mnDn = False
+
+        for i in range(len(df)):
+            row = df.iloc[i]
+            current_time = row['timestamp']
+            current_high = row['high']
+            current_low = row['low']
+            current_close = row['close']
+            previous_row = df.iloc[i-1] if i >= 1 else None
+            previous2_row = df.iloc[i-2] if i >= 2 else None
+
+            if ((current_high > H) or (equalHL and abs(current_high - H) < 1e-12)) and (current_low > idmB):
+                if current_low <= puDn:
+                    idmB = current_low
+                    idmB_time = current_time
+                else:
+                    idmB = puDn
+                    idmB_time = puDn_time
+
+            if ((current_low < L) or (equalHL and abs(current_low - L) < 1e-12)) and (current_high < idmS):
+                if current_high >= puUp:
+                    idmS = current_high
+                    idmS_time = current_time
+                else:
+                    idmS = puUp
+                    idmS_time = puUp_time
+
+            if isCocUp:
+                if current_low < idmB:
+                    if abs(idmB - lastL) > 1e-12:
+                        IDM(True, current_time)
+                    isBosUp = False
+                    lastH = H
+                    lastH_time = H_time
+                    lastHH = H
+                    lastHH_time = H_time
+                    cfHL(True, current_time, current_high, current_low, current_close, i, row, previous_row)
+                    L = current_low
+                    L_time = current_time
+            elif (abs(lastH - lastHH) > 1e-12) and (current_high > lastH):
+                cfHL(False, current_time, current_high, current_low, current_close, i, row, previous_row)
+                isCocDn = False
+                isBosDn = False
+                if current_close > lastH:
+                    BoS_ChoCh(False, True, current_time, current_close)
+                    isCocUp = True
+                else:
+                    sweep(True, False, current_time)
+
+            if isCocDn:
+                if current_high > idmS:
+                    if abs(idmS - lastH) > 1e-12:
+                        IDM(False, current_time)
+                    isBosDn = False
+                    lastL = L
+                    lastL_time = L_time
+                    lastLL = L
+                    lastLL_time = L_time
+                    cfHL(False, current_time, current_high, current_low, current_close, i, row, previous_row)
+                    H = current_high
+                    H_time = current_time
+            elif (current_low < lastL) and (abs(lastL - lastLL) > 1e-12):
+                if current_close < lastL:
+                    BoS_ChoCh(False, False, current_time, current_close)
+                    cfHL(True, current_time, current_high, current_low, current_close, i, row, previous_row)
+                    isCocDn = True
+                    isCocUp = False
+                    isBosUp = False
+                else:
+                    sweep(False, True, current_time)
+
+            if not isBosUp:
+                if current_high > lastHH:
+                    if current_close > lastHH:
+                        BoS_ChoCh(True, True, current_time, current_close)
+                        cfHL(False, current_time, current_high, current_low, current_close, i, row, previous_row)
+                        lastL = L
+                        lastL_time = L_time
+                        isCocUp = True
+                        isBosUp = True
+                        isCocDn = False
+                        isBosDn = False
+                    else:
+                        sweep(True, True, current_time)
+
+            if not isBosDn:
+                if current_low < lastLL:
+                    if current_close < lastLL:
+                        BoS_ChoCh(True, False, current_time, current_close)
+                        cfHL(True, current_time, current_high, current_low, current_close, i, row, previous_row)
+                        lastH = H
+                        lastH_time = H_time
+                        isCocUp = False
+                        isBosUp = False
+                        isCocDn = True
+                        isBosDn = True
+                    else:
+                        sweep(False, False, current_time)
+
+            if equalHL:
+                if current_high >= top:
+                    if current_low > bot:
+                        mnDn = False
+                    mnUp = True
+                if current_low <= bot:
+                    if current_high < top:
+                        mnUp = False
+                    mnDn = True
+            else:
+                if current_high > top:
+                    if current_low > bot:
+                        mnDn = False
+                    mnUp = True
+                if current_low < bot:
+                    if current_high < top:
+                        mnUp = False
+                    mnDn = True
+
+            old_top = top
+            old_bot = bot
+
+            if equalHL:
+                if current_high >= top:
+                    puUp = current_high
+                    puUp_time = current_time
+                if current_low <= bot:
+                    puDn = current_low
+                    puDn_time = current_time
+                    top = current_high
+                    bot = current_low
+                if current_high >= top:
+                    top = current_high
+                    bot = current_low
+            else:
+                if current_high > top:
+                    puUp = current_high
+                    puUp_time = current_time
+                if current_low < bot:
+                    puDn = current_low
+                    puDn_time = current_time
+                    top = current_high
+                    bot = current_low
+                if current_high > top:
+                    top = current_high
+                    bot = current_low
+
+            if (current_high > H) or (equalHL and abs(current_high - H) < 1e-12):
+                H = current_high
+                H_time = current_time
+            if current_high > idmS:
+                idmS = current_high
+                idmS_time = current_time
+            if (current_high > lastH) or (equalHL and abs(current_high - lastH) < 1e-12):
+                lastH = current_high
+                lastH_time = current_time
+            if (current_high > lastHH) or (equalHL and abs(current_high - lastHH) < 1e-12):
+                lastHH = current_high
+                lastHH_time = current_time
+
+            if (current_low < L) or (equalHL and abs(current_low - L) < 1e-12):
+                L = current_low
+                L_time = current_time
+            if current_low < idmB:
+                idmB = current_low
+                idmB_time = current_time
+            if (current_low < lastL) or (equalHL and abs(current_low - lastL) < 1e-12):
+                lastL = current_low
+                lastL_time = current_time
+            if (current_low < lastLL) or (equalHL and abs(current_low - lastLL) < 1e-12):
+                lastLL = current_low
+                lastLL_time = current_time
+
+        f_loginfo(f"Structure detection logic completed. structArr size: {len(structArr)}")
+        f_loginfo(f"OB Array size: {len(obArray)}")
+        for idx, ob in enumerate(obArray):
+            f_loginfo(f"OB #{idx} => Time: {ob.bar_time}, Top: {ob.topPrice}, Bottom: {ob.bottomPrice}, MajorUp: {ob.isMajorUp}")
+    except Exception as e:
+        logger.error(f"Error in main: {e}")
+
+if __name__ == "__main__":
+    main()
+
