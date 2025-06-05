@@ -54,12 +54,7 @@ isBosDn = False
 isCocUp = True
 isCocDn = True
 df = None  # Global DataFrame
-lll=0
-chk_l=False
-countu=0
-con1=False
-isMajor=False
-waitingForHL=False
+
 # Utility functions
 def is_na(value):
     return value is None
@@ -171,8 +166,8 @@ def f_drawStructBox(df, current_row, previous_row):
         prevpr4 = structPriceArr[-5]
         if currBar < len(df):
             f_checkMajorOrMinor(prevS, prevS2, currS, prevBar, currBar, prevPr, currPr, prevpr2, currBar2, df, current_row, previous_row)
-            f_zoneChocDown(prevS, prevS2, currS, prevBar, currBar, prevPr, currPr, prevpr2, currBar2, prevpr3, prevS3, prevpr4, df, current_row, previous_row)
-            f_zoneChocUp(prevS, prevS2, currS, prevBar, currBar, prevPr, currPr, prevpr2, currBar2, prevpr3, prevS3, prevpr4, df, current_row, previous_row)
+            #f_zoneChocDown(prevS, prevS2, currS, prevBar, currBar, prevPr, currPr, prevpr2, currBar2, prevpr3, prevS3, prevpr4, df, current_row, previous_row)
+            #f_zoneChocUp(prevS, prevS2, currS, prevBar, currBar, prevPr, currPr, prevpr2, currBar2, prevpr3, prevS3, prevpr4, df, current_row, previous_row)
         else:
             logger.error(f"Invalid curBar index: {currBar}")
         structArr.pop(0)
@@ -264,498 +259,330 @@ def cfHL(isHigh: bool, current_time, current_high, current_low, current_close, b
         structPriceArr.append(actual_low)
         structBarArr.append(bar_index)
         f_drawStructBox(df, current_row, previous_row)
-# State dictionary to replace global variables
-def f_checkMajorOrMinor(prevS, prevS2, curS, prevBar, curBar, prevPr, curPr, prevpr2, currBar2, df, current_row, previous_row):
-    """
-    ฟังก์ชันนี้ใช้ตรวจสอบว่าโครงสร้างตลาด (structure) ที่เพิ่งเกิดขึ้นเป็น Major หรือ Minor 
-    ผ่านเงื่อนไขต่าง ๆ (Ret, Choch, ฯลฯ) และบันทึก OB (Order Block) เมื่อเป็น Major
-    พร้อมเพิ่ม Log เพื่อตรวจสอบลำดับเหตุการณ์ที่เกิดขึ้น รวมถึงแสดง timestamp ของ bar ปัจจุบัน
-    """
-    # เวลา bar ปัจจุบัน สำหรับการ Log
-    current_time = current_row['timestamp'] if (current_row is not None and 'timestamp' in current_row) else "No_timestamp"
 
-    # Log สำหรับเริ่มต้นการทำงานของฟังก์ชัน
+
+
+
+# Global DataFrame
+df = None
+
+# Global variables ?????????????????????
+structArr = []
+structTimeArr = []
+structPriceArr = []
+structBarArr = []
+obArray = []
+lookback = 4
+
+# Input parameters
+equalHL = False
+showHL = True
+showMn = False
+showBC = True
+showIDM = False
+showliveIDM = True
+showSw = False
+markX = False
+
+# Initialize state variables (global) ?????? ZoneRetUp
+lll = None         # ???? low ??????????
+chk_l = False      # ???????? M1 ???????
+countu = 0         # ??? M2 (candle 2)
+waitingForHL = False  # ?? HL ????????? M3 (?????? Higher High)
+isMajor_up = False   # ???????? zoneRetUp ??????????? Major ???????????
+
+# Initialize state variables (global) ?????? ZoneRetDown
+hhh = None         # ???? high ????????
+chk_h = False      # ???????? M1 (?????????????)
+countd = 0         # ??? M2 ???????????? (candle 2)
+waitingForLH = False  # ?? LH ????????? M3 (?????? Lower Low)
+isMajor_down = False  # ???????? zoneRetDown ??????????? Major ???????????
+
+# ?????? state ????? (idf, puUp, puDn, lastH, lastL, lastHH, lastLL, ???) ...
+mnUp = None
+mnDn = None
+top = None
+bot = None
+puUp = None
+puDn = None
+L = None
+H = None
+idmB = None
+idmS = None
+lastH = None
+lastL = None
+lastHH = None
+lastLL = None
+puUp_time = None
+puDn_time = None
+idmB_time = None
+idmS_time = None
+H_time = None
+L_time = None
+lastH_time = None
+lastL_time = None
+lastHH_time = None
+lastLL_time = None
+isBosUp = False
+isBosDn = False
+isCocUp = True
+isCocDn = True
+
+# Utility functions
+def is_na(value):
+    return value is None
+
+def f_get50PctLine(priceA, priceB):
+    return (priceA + priceB) / 2.0
+
+# OBData class
+class OBData:
+    def __init__(self, bar_time, topPrice, bottomPrice, isMajorUp):
+        self.bar_time = bar_time
+        self.topPrice = topPrice
+        self.bottomPrice = bottomPrice
+        self.isMajorUp = isMajorUp
+
+# ???????? log
+def f_loginfo(message):
+    logger.info(message)
+
+# ?????????????? OB (??????????)
+def f_storeOB(isMajorUp, topPrice, bottomPrice, current_time=None):
+    newOB = OBData(
+        bar_time=current_time if current_time is not None else 0,
+        topPrice=topPrice,
+        bottomPrice=bottomPrice,
+        isMajorUp=isMajorUp
+    )
+    obArray.insert(0, newOB)
+    log_text = f"f_storeOB -> {'Bullish' if isMajorUp else 'Bearish'} top={topPrice} bottom={bottomPrice}"
+    f_loginfo(log_text)
+    return [isMajorUp, bottomPrice, topPrice]
+
+# ????? Higher High ????????
+def f_findFirstHigherHigh(currentHigh, lookback_in, refBar, df):
+    firstHigherHigh = None
+    firstbarH = None
+    for i in range(1, lookback_in + 1):
+        checkBar = refBar - i
+        if 0 <= checkBar < len(df):
+            histHigh = df.loc[checkBar, 'high']
+            if histHigh > currentHigh:
+                firstHigherHigh = histHigh
+                firstbarH = checkBar
+                break
+    return [firstHigherHigh, firstbarH]
+
+# ????? Lower Low ????????
+def f_findFirstLowerLow(currentLow, lookback_in, refBar, df):
+    firstLowerLow = None
+    firstbarL = None
+    for i in range(1, lookback_in + 1):
+        checkBar = refBar - i
+        if 0 <= checkBar < len(df):
+            histLow = df.loc[checkBar, 'low']
+            if histLow < currentLow:
+                firstLowerLow = histLow
+                firstbarL = checkBar
+                break
+    return [firstLowerLow, firstbarL]
+
+
+def f_checkMajorOrMinor(prevS, prevS2, curS, prevBar, curBar, prevPr, curPr, prevpr2, currBar2, df, current_row, previous_row):
+    global lll, chk_l, countu, waitingForHL, isMajor_up
+    global hhh, chk_h, countd, waitingForLH, isMajor_down
+    
+    # ???? bar ???????? ?????? Log
+    current_time = current_row['timestamp'] if (current_row is not None and 'timestamp' in current_row) else "No_timestamp"
     f_loginfo(f"[f_checkMajorOrMinor] START -> curBar={curBar}, prevS={prevS}, curS={curS}, time={current_time}")
 
-    zoneRetUp = (prevS == "HL" and curS == "HH")       # สถานการณ์ Ret Up
-    zoneRetDown = (prevS == "LH" and curS == "LL")     # สถานการณ์ Ret Down
-    zonechocdn = (prevS == "HH" and curS == "LL")      # สถานการณ์ Choch Down
-    zonechocup = (prevS == "LL" and curS == "HH")      # สถานการณ์ Choch Up
+    zoneRetUp   = (prevS == "HL"  and curS == "HH")
+    zoneRetDown = (prevS == "LH"  and curS == "LL")
+    zonechocdn  = (prevS == "HH"  and curS == "LL")
+    zonechocup  = (prevS == "LL"  and curS == "HH")
 
-    # ตัวแปรช่วยสำหรับควบคุม state
-    up = None
-    lll = None
-    dn = None
-    hhh = None
-    con1 = False
-    con2 = False
-    isMajor = False
-    count = 0
-    countu = 0
-    chk_l = False
-    chk_h = False
-    waitingForHL = False
-    waitingForLH = False
-
-    # หากเป็น Choch ขึ้นลง ให้ reset ค่าเงื่อนไข
+    # ----------------------------- 0) ??? CHoCH ???? ????????? state ??????? -----------------------------
     if zonechocdn or zonechocup:
-        f_loginfo(f"[f_checkMajorOrMinor] Detected zonechoc (LL->HH หรือ HH->LL) at time={current_time}")
-        con1 = False
-        con2 = False
+        f_loginfo(f"[f_checkMajorOrMinor] Detected CHoCH -> reset Up/Down state")
+        # ?????????? Up
+        chk_l = False
+        lll = None
+        countu = 0
         waitingForHL = False
+        isMajor_up = False
+        # ?????????? Down
+        chk_h = False
+        hhh = None
+        countd = 0
         waitingForLH = False
+        isMajor_down = False
 
-    # --------------------------------------------------------------------------------------------------
-    # 1) ZoneRet Up: (HL -> HH) แล้วตรวจสอบว่าการกลับตัว (Retracement) นั้นแรงพอจะเป็น Major ไหม
-    # --------------------------------------------------------------------------------------------------
-    if zoneRetUp and not isMajor:
-        f_loginfo(f"[f_checkMajorOrMinor] ZoneRetUp Condition => prevS={prevS}, curS={curS}, time={current_time}")
+    # =========================================
+    # 1) ???? ZoneRetUp: HL -> HH (Major/Minor Up)
+    # =========================================
+    if zoneRetUp and not isMajor_up:
+        f_loginfo(f"[ZoneRetUp] prevS={prevS}, curS={curS}, time={current_time}")
         halfLine = f_get50PctLine(prevPr, curPr)
+
         if current_row is not None and previous_row is not None:
-            low_now = current_row['low']
-            low_prev = previous_row['low']
-            open_now = current_row['open']
+            low_now   = current_row['low']
+            low_prev  = previous_row['low']
+            open_now  = current_row['open']
             open_prev = previous_row['open']
             close_now = current_row['close']
-            close_prev = previous_row['close']
+            close_prev= previous_row['close']
 
-            # ตรงนี้เป็น logic สำหรับเช็ค high/low เทียบกับ halfLine ว่าต่ำกว่าหรือสูงกว่า
+            # ----- M1: ??? low < halfLine ???????? ???????? chk_l/lll -----
             if low_now < halfLine and low_prev > halfLine and not chk_l:
                 chk_l = True
                 lll = low_now
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] rethigh > halfLine={halfLine}, lll={lll}, time={current_time}")
+                f_loginfo(f"[ZoneRetUp] M1 triggered -> chk_l=True, lll={lll}")
 
+            # ----- M2: ??? lll ??? None ??????????????? low ???????????? -----
             if lll is not None and low_now < lll:
                 lll = low_now
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] found lower low => lll={lll}, time={current_time}")
+                f_loginfo(f"[ZoneRetUp] Update lll to lower low => lll={lll}")
 
-            if lll is not None :
-                if close_now < lll and close_now < halfLine:
-                    up = "waiting candle2"
-                    countu += 1
-                    f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] waiting ret up => countu={countu}, halfLine={halfLine}, time={current_time}")
+            # ----- M2 (???): ??? close_today < lll ??? close_today < halfLine ??? countu++ -----
+            if lll is not None and close_now < lll and close_now < halfLine:
+                countu += 1
+                f_loginfo(f"[ZoneRetUp] M2 triggered -> countu={countu}")
 
-            if countu >= 1:
-                # Logic ตัวอย่างสมมุติว่าเช็ค engulf
-                if (close_prev < open_prev) and (close_now > open_now) \
-                   and (open_now <= close_prev) and (close_now >= open_prev):
-                    countu -= 1
-                    f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] engulf ret up => countu={countu}, time={current_time}")
-
-            # ถ้า countu ถึงเงื่อนไขตามต้องการ
+            # ----- ??? countu >= 2 ?????????? con1 -----
             if countu >= 2:
                 con1 = True
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] con1 = True => countu={countu}, time={current_time}")
+                f_loginfo(f"[ZoneRetUp] con1=True (countu>=2)")
 
-            if con1:
-                # รีเซ็ตไม่ให้เช็คซ้ำ
-                chk_l = False
-
-            # อีกเงื่อนไขคือราคา low ปัจจุบันต้องต่ำกว่า prevpr2 ด้วย
+            # ----- con2: low_now < prevpr2 -----
+            con2 = False
             if prevpr2 is not None and low_now < prevpr2:
                 con2 = True
+                f_loginfo(f"[ZoneRetUp] con2=True (low_now < prevpr2)")
 
-            f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] con1={con1}, con2={con2}, curClose={close_now}, time={current_time}")
+            f_loginfo(f"[ZoneRetUp] con1={con1}, con2={con2}, time={current_time}")
 
-            # เป็น Major ได้ก็ต่อเมื่อ con1 และ con2 เป็นจริง
-            isMajor = con1 and con2
-            if isMajor:
+            # ----- ??? con1 & con2 ???????? => isMajor_up=True ?????? HL (M3) ??????????? -----
+            if con1 and con2:
+                isMajor_up = True
                 waitingForHL = True
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] -> isMajor=True, waitingForHL=True, time={current_time}")
-        else:
-            logger.warning("[f_checkMajorOrMinor|ZoneRetUp] Missing current or previous row data")
+                f_loginfo(f"[ZoneRetUp] isMajor_up=True, waitingForHL=True")
 
-    # หากเกิดการรอ HL (waitingForHL) เมื่อไหร่ก็ตามที่เจอ HL
+        else:
+            logger.warning("[ZoneRetUp] Missing current/previous row data")
+
+    # ----- ????? HL (M3) ?????? curS=="HL" ????????? Major, ???? OB -----
     if waitingForHL and curS == "HL":
-        f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] waitingForHL & found HL => curS={curS}, time={current_time}")
+        f_loginfo(f"[ZoneRetUp] waitingForHL & found HL -> confirm Major Up at time={current_time}")
         waitingForHL = False
-        isMajor = False  # ดึงกลับมา set ไว้ก่อน
         currentHigh = current_row['high'] if current_row is not None else None
         if currentHigh is not None:
-            [firstHigherHigh, firstbarH] = f_findFirstHigherHigh(currentHigh, lookback, curBar, df)
+            firstHigherHigh, firstbarH = f_findFirstHigherHigh(currentHigh, lookback, curBar, df)
             if not is_na(firstHigherHigh) and not is_na(firstbarH):
-                # บันทึกเป็น OB
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] Found Higher High => {firstHigherHigh} at bar={firstbarH}, time={current_time}")
                 topOB = firstHigherHigh
                 bottomOB = curPr
                 f_storeOB(True, topOB, bottomOB, current_time)
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] Confirmed Major with HL => curS={curS}, time={current_time}")
+                f_loginfo(f"[ZoneRetUp] Stored Bullish OB => top={topOB}, bottom={bottomOB}, time={current_time}")
 
-    # ถ้าเกิดเจอ LL ระหว่างที่กำลังรอ HL => โมเมนตัมขึ้นอาจเสีย
-    if isMajor and curS == "LL":
-        f_loginfo(f"[f_checkMajorOrMinor|ZoneRetUp] Major invalidated => found LL while waiting HL, time={current_time}")
-        isMajor = False
+    # ----- ????? isMajor_up=True ?????? curS=="LL" ???????????????? -----
+    if isMajor_up and curS == "LL":
+        f_loginfo(f"[ZoneRetUp] Major_up invalidated by LL -> reset Up-state, time={current_time}")
+        isMajor_up = False
         waitingForHL = False
-
-    # ถ้าไม่ใช่ ZoneRetUp เคสอื่นก็รีเซ็ต
-    if not zoneRetUp:
+        chk_l = False
+        lll = None
         countu = 0
-        isMajor = False
-        con1 = False
-        con2 = False
 
-    # --------------------------------------------------------------------------------------------------
-    # 2) ZoneRet Down: (LH -> LL) แล้วตรวจสอบเงื่อนไขสำหรับการเป็น Major
-    # --------------------------------------------------------------------------------------------------
-    if zoneRetDown and not isMajor:
-        f_loginfo(f"[f_checkMajorOrMinor] ZoneRetDown Condition => prevS={prevS}, curS={curS}, time={current_time}")
+    # ----- ????????? zoneRetUp ??????????????????????? Up -----
+    if not zoneRetUp:
+        chk_l = False
+        lll = None
+        countu = 0
+
+    # ============================================
+    # 2) ???? ZoneRetDown: LH -> LL (Major/Minor Down)
+    # ============================================
+    if zoneRetDown and not isMajor_down:
+        f_loginfo(f"[ZoneRetDown] prevS={prevS}, curS={curS}, time={current_time}")
         halfLine = f_get50PctLine(prevPr, curPr)
+
         if current_row is not None and previous_row is not None:
-            high_now = current_row['high']
-            high_prev = previous_row['high']
-            open_now = current_row['open']
-            open_prev = previous_row['open']
-            close_now = current_row['close']
+            high_now   = current_row['high']
+            high_prev  = previous_row['high']
+            open_now   = current_row['open']
+            open_prev  = previous_row['open']
+            close_now  = current_row['close']
             close_prev = previous_row['close']
 
+            # ----- M1: ??? high > halfLine ???????? ???????? chk_h/hhh -----
             if high_now > halfLine and high_prev < halfLine and not chk_h:
                 chk_h = True
                 hhh = high_now
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] retdn < halfLine={halfLine}, hhh={hhh}, time={current_time}")
+                f_loginfo(f"[ZoneRetDown] M1 triggered -> chk_h=True, hhh={hhh}")
 
+            # ----- M2: ??? hhh ??? None ??????????????? high ???????????? -----
             if hhh is not None and high_now > hhh:
                 hhh = high_now
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] found higher high => hhh={hhh}, time={current_time}")
+                f_loginfo(f"[ZoneRetDown] Update hhh to higher high => hhh={hhh}")
 
-            if  hhh is not None:
-                if close_now > hhh and close_now > halfLine:
-                    dn = "waiting candle2"
-                    count += 1
-                    f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] waiting ret down => count={count}, halfLine={halfLine}, time={current_time}")
+            # ----- M2 (???): ??? close_today > hhh ??? close_today > halfLine ??? countd++ -----
+            if hhh is not None and close_now > hhh and close_now > halfLine:
+                countd += 1
+                f_loginfo(f"[ZoneRetDown] M2 triggered -> countd={countd}")
 
-            if count > 0:
-                if (close_prev > open_prev) and (close_now < open_now) \
-                   and (open_now >= close_prev) and (close_now <= open_prev):
-                    count -= 1
-                    f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] engulf => count={count}, time={current_time}")
-
-            if count >= 2:
+            # ----- ??? countd >= 2 ?????????? con1 -----
+            if countd >= 2:
                 con1 = True
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] con1=True => count={count}, time={current_time}")
+                f_loginfo(f"[ZoneRetDown] con1=True (countd>=2)")
 
-            if con1:
-                chk_h = False
-
-            if high_now > prevpr2:
+            # ----- con2: high_now > prevpr2 -----
+            con2 = False
+            if prevpr2 is not None and high_now > prevpr2:
                 con2 = True
+                f_loginfo(f"[ZoneRetDown] con2=True (high_now > prevpr2)")
 
-            f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] con1={con1}, con2={con2}, close={close_now}, time={current_time}")
+            f_loginfo(f"[ZoneRetDown] con1={con1}, con2={con2}, time={current_time}")
 
-            isMajor = con1 and con2
-            if isMajor:
+            # ----- ??? con1 & con2 ???????? => isMajor_down=True ?????? LH (M3) ??????????? -----
+            if con1 and con2:
+                isMajor_down = True
                 waitingForLH = True
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] -> isMajor=True, waitingForLH=True, time={current_time}")
+                f_loginfo(f"[ZoneRetDown] isMajor_down=True, waitingForLH=True")
+
         else:
-            logger.warning("[f_checkMajorOrMinor|ZoneRetDown] Missing current or previous row data")
+            logger.warning("[ZoneRetDown] Missing current/previous row data")
 
-    if waitingForLH and curS == "LL" and prevS == "LL":
-        f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] waitingForLH & found (LL->LL) => reset Major, time={current_time}")
-        isMajor = False
-        waitingForLH = False
-        con1 = False
-        con2 = False
-
+    # ----- ????? LH (M3) ?????? curS=="LH" ????????? Major Down, ???? OB -----
     if waitingForLH and curS == "LH":
-        f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] waitingForLH & found LH => time={current_time}")
+        f_loginfo(f"[ZoneRetDown] waitingForLH & found LH -> confirm Major Down at time={current_time}")
         waitingForLH = False
-        isMajor = False  # กันเผื่อเหตุการณ์ invalid
         currentLow = current_row['low'] if current_row is not None else None
         if currentLow is not None:
-            [firstLowerLow, firstbarL] = f_findFirstLowerLow(currentLow, lookback, curBar, df)
+            firstLowerLow, firstbarL = f_findFirstLowerLow(currentLow, lookback, curBar, df)
             if not is_na(firstLowerLow) and not is_na(firstbarL):
-                f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] Found Lower Low => {firstLowerLow} at bar={firstbarL}, time={current_time}")
                 bottomOB = firstLowerLow
                 topOB = curPr
                 f_storeOB(False, topOB, bottomOB, current_time)
-            # หาก firstbarL == curBar ก็แปลว่าตรงกับแท่งปัจจุบัน
-            if not is_na(firstbarL) and firstbarL == curBar:
-                bottomOB = firstLowerLow
-                topOB = curPr
-                f_storeOB(False, topOB, bottomOB, current_time)
-            f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] Confirmed Major with LH => curS={curS}, time={current_time}")
+                f_loginfo(f"[ZoneRetDown] Stored Bearish OB => top={topOB}, bottom={bottomOB}, time={current_time}")
 
-    if isMajor and curS == "HH":
-        f_loginfo(f"[f_checkMajorOrMinor|ZoneRetDown] Major invalidated => found HH while waiting LH, time={current_time}")
-        isMajor = False
+    # ----- ????? isMajor_down=True ?????? curS=="HH" ???????????????? -----
+    if isMajor_down and curS == "HH":
+        f_loginfo(f"[ZoneRetDown] Major_down invalidated by HH -> reset Down-state, time={current_time}")
+        isMajor_down = False
         waitingForLH = False
+        chk_h = False
+        hhh = None
+        countd = 0
 
-    # ถ้าไม่ใช่ ZoneRetDown
+    # ----- ????????? zoneRetDown ???????????????????? Down -----
     if not zoneRetDown:
-        count = 0
-        isMajor = False
-        con1 = False
-        con2 = False
+        chk_h = False
+        hhh = None
+        countd = 0
 
-    # สุดท้าย return ว่าอันนี้เป็น Major หรือไม่
-    f_loginfo(f"[f_checkMajorOrMinor] END -> isMajor={isMajor}, time={current_time}")
-    return isMajor
+    f_loginfo(f"[f_checkMajorOrMinor] END -> isMajor_up={isMajor_up}, isMajor_down={isMajor_down}, time={current_time}")
+    return isMajor_up or isMajor_down
 
-
-
-
-def f_zoneChocUp(prevS, prevS2, curS, prevBar, curBar, prevPr, curPr, prevpr2, currBar2, 
-                 prevpr3, prevS3, prevpr4, df, current_row, previous_row):
-    # ประกาศตัวแปรเริ่มต้น
-    isMajor = False
-    con1 = False
-    con2 = False
-    count = 0
-    chk_l = False
-    lll = None
-    up = None
-    waitingForHL = False
-    pre = 0
-
-    # ดึงค่า current_time จาก current_row
-    current_time = current_row['timestamp'] if current_row is not None else None
-
-    # Log จุดเริ่มต้นของฟังก์ชัน
-    logger.info(f"[f_zoneChocUp] => START at time {current_time} | prevS={prevS}, curS={curS}, prevPr={prevPr}, curPr={curPr}")
-
-    zoneChocUp = (prevS == "LL" and curS == "HH")
-    logger.debug(f"[f_zoneChocUp] Check zoneChocUp => {zoneChocUp}")
-
-    if zoneChocUp and not isMajor:
-        halfLine = f_get50PctLine(prevPr, curPr)
-        logger.debug(f"[f_zoneChocUp] halfLine calculated => {halfLine}")
-
-        # ตรวจสอบว่า current_row และ previous_row มีข้อมูลหรือไม่
-        if current_row is not None and previous_row is not None:
-            low_now = current_row['low']
-            low_prev = previous_row['low']
-            open_now = current_row['open']
-            open_prev = previous_row['open']
-            close_now = current_row['close']
-            close_prev = previous_row['close']
-
-            logger.debug(f"[f_zoneChocUp] low_now={low_now}, low_prev={low_prev}, close_now={close_now}, close_prev={close_prev}")
-
-            # เงื่อนไขตรวจสอบส่วนต่าง ๆ
-            if low_now < halfLine and low_prev > halfLine and not chk_l:
-                chk_l = True
-                lll = low_now
-                logger.info(f"[f_zoneChocUp] => Condition triggered: low_now < halfLine < low_prev | lll={lll}")
-
-            if lll is not None and low_now < lll:
-                lll = low_now
-                logger.info(f"[f_zoneChocUp] => Update lll => {lll}")
-
-            if lll is not None :
-                if close_now < lll and close_now < halfLine:
-                    up = "waiting candle2"
-                    count += 1
-                    logger.info(f"[f_zoneChocUp] => waiting candle2 triggered | count={count}")
-
-            if count >= 1:
-                # ตรวจสอบรูปแบบ engulf
-                if (close_prev < open_prev) and (close_now > open_now) \
-                   and (open_now <= close_prev) and (close_now >= open_prev):
-                    count -= 1
-                    logger.info(f"[f_zoneChocUp] => Engulf pattern triggered, decrement count => {count}")
-
-            if count >= 2:
-                logger.info(f"[f_zoneChocUp] => con1 becomes True (count >= 2)")
-                con1 = True
-
-            # เอา prevpr3 กับ prevpr4 มาดูเทียบ
-            pre = prevpr3
-            if prevpr3 < prevpr4:
-                pre = prevpr4
-
-            if low_now < pre:
-                con2 = True
-                logger.info(f"[f_zoneChocUp] => con2 becomes True (low_now < pre) | pre={pre}")
-
-            logger.debug(f"[f_zoneChocUp] con1={con1}, con2={con2}, count={count}, chk_l={chk_l}")
-
-            isMajor = con1 and con2
-            if isMajor:
-                waitingForHL = True
-                con1 = False
-                con2 = False
-                count = 0
-                halfLine = None
-                logger.info(f"[f_zoneChocUp] => Detected MAJOR ChocUp, set waitingForHL=True")
-        else:
-            logger.warning("[f_zoneChocUp] => Missing current or previous row data")
-
-    # กรณีรอ HL เพื่อตรวจสอบยืนยัน Major
-    if waitingForHL and curS == "HL":
-        # เมื่อเกิด HL แล้ว จะทำการยกเลิกการรอ
-        isMajor = False
-        waitingForHL = False
-        count = 0
-        logger.info(f"[f_zoneChocUp] => waitingForHL met HL => cancel waiting, check for Higher High")
-
-        if current_row is not None:
-            currentHigh = current_row['high']
-            [firstHigherHigh, firstbarH] = f_findFirstHigherHigh(currentHigh, lookback, curBar, df)
-            if not is_na(firstHigherHigh) and not is_na(firstbarH):
-                logger.info(f"[f_zoneChocUp] => Found Higher High={firstHigherHigh} at bar={firstbarH}")
-                topOB = firstHigherHigh
-                bottomOB = curPr
-                f_storeOB(True, topOB, bottomOB, current_time)
-                logger.info(f"[f_zoneChocUp] => Confirmed Major ChocUp with HL => {curBar}")
-        else:
-            logger.warning("[f_zoneChocUp] => current_row is None while waitingForHL")
-
-    # ถ้ายังรอ HL อยู่แต่ดันได้ HH ต่อกัน หรือเจอเงื่อนไขอื่น ๆ
-    if waitingForHL and curS == "HH" and prevS == "HH":
-        isMajor = False
-        waitingForHL = False
-        con1 = False
-        con2 = False
-        count = 0
-        logger.info("[f_zoneChocUp] => waitingForHL but got HH again => reset everything")
-
-    # ถ้าเป็น Major อยู่แต่โดน LL => invalidated
-    if isMajor and curS == "LL":
-        isMajor = False
-        waitingForHL = False
-        logger.info(f"[f_zoneChocUp] => Major ChocUp invalidated due to LL => {curS}")
-
-    # ถ้าไม่ได้เป็น zoneChocUp => reset
-    if not zoneChocUp:
-        count = 0
-        isMajor = False
-        con1 = False
-        con2 = False
-
-    logger.debug(f"[f_zoneChocUp] => END at time {current_time}, isMajor={isMajor}, waitingForHL={waitingForHL}")
-    return isMajor
-
-def f_zoneChocDown(prevS, prevS2, curS, prevBar, curBar, prevPr, curPr, prevpr2, currBar2, 
-                   prevpr3, prevS3, prevpr4, df, current_row, previous_row):
-    # ประกาศตัวแปรเริ่มต้น
-    isMajor = False
-    con1 = False
-    con2 = False
-    count = 0
-    chk_h = False
-    hhh = None
-    dn = None
-    waitingForLH = False
-    pre = 0
-
-    # ดึงค่า current_time จาก current_row
-    current_time = current_row['timestamp'] if current_row is not None else None
-
-    # Log จุดเริ่มต้นของฟังก์ชัน
-    logger.info(f"[f_zoneChocDown] => START at time {current_time} | prevS={prevS}, curS={curS}, prevPr={prevPr}, curPr={curPr}")
-
-    zoneChocDown = (prevS == "HH" and curS == "LL")
-    logger.debug(f"[f_zoneChocDown] Check zoneChocDown => {zoneChocDown}")
-
-    if zoneChocDown and not isMajor:
-        halfLine = f_get50PctLine(prevPr, curPr)
-        logger.debug(f"[f_zoneChocDown] halfLine calculated => {halfLine}")
-
-        if current_row is not None and previous_row is not None:
-            high_now = current_row['high']
-            high_prev = previous_row['high']
-            open_now = current_row['open']
-            open_prev = previous_row['open']
-            close_now = current_row['close']
-            close_prev = previous_row['close']
-
-            logger.debug(f"[f_zoneChocDown] high_now={high_now}, high_prev={high_prev}, close_now={close_now}, close_prev={close_prev}")
-
-            if high_now > halfLine and high_prev < halfLine and not chk_h:
-                chk_h = True
-                hhh = high_now
-                logger.info(f"[f_zoneChocDown] => Condition triggered: high_now > halfLine > high_prev | hhh={hhh}")
-
-            if hhh is not None and high_now > hhh:
-                hhh = high_now
-                logger.info(f"[f_zoneChocDown] => Update hhh => {hhh}")
-
-            if hhh is not None:
-                if close_now > hhh and close_now > halfLine:
-                    dn = "waiting candle2"
-                    count += 1
-                    logger.info(f"[f_zoneChocDown] => waiting candle2 triggered | count={count}")
-
-            # ตรวจสอบ engulf pattern (ตัวอย่างเงื่อนไขแบบเดียวกับในโค้ด)
-            if count > 0 and close_prev > hhh and close_now < hhh:
-                if (close_prev > open_prev) and (close_now < open_now) \
-                   and (open_now >= close_prev) and (close_now <= open_prev):
-                    count -= 1
-                    logger.info(f"[f_zoneChocDown] => Engulf pattern triggered, decrement count => {count}")
-
-            if count >= 2:
-                logger.info(f"[f_zoneChocDown] => con1 becomes True (count >= 2)")
-                count = 0
-                con1 = True
-
-            if con1:
-                chk_h = False
-
-            pre = prevpr3
-            if prevpr3 > prevpr4:
-                pre = prevpr4
-
-            if high_now > prevpr3:
-                con2 = True
-                logger.info("[f_zoneChocDown] => con2 becomes True (high_now > prevpr3)")
-
-            logger.debug(f"[f_zoneChocDown] con1={con1}, con2={con2}, count={count}, chk_h={chk_h}")
-
-            isMajor = con1 and con2
-            if isMajor:
-                waitingForLH = True
-                con1 = False
-                con2 = False
-                count = 0
-                halfLine = None
-                logger.info("[f_zoneChocDown] => Detected MAJOR ChocDown, set waitingForLH=True")
-        else:
-            logger.warning("[f_zoneChocDown] => Missing current or previous row data")
-
-    # รอ LH เพื่อ confirm ว่าเป็น Major
-    if waitingForLH and curS == "LH":
-        isMajor = False
-        waitingForLH = False
-        count = 0
-        logger.info("[f_zoneChocDown] => waitingForLH met LH => check for Lower Low")
-
-        if current_row is not None:
-            currentLow = current_row['low']
-            [firstLowerLow, firstbarL] = f_findFirstLowerLow(currentLow, lookback, curBar, df)
-            if not is_na(firstLowerLow) and not is_na(firstbarL):
-                bottomOB = firstLowerLow
-                topOB = curPr
-                f_storeOB(False, topOB, bottomOB, current_time)
-                logger.info(f"[f_zoneChocDown] => Confirmed Major ChocDown with LH => {curS}")
-                
-                if firstbarL == curBar:
-                    logger.info("[f_zoneChocDown] => firstbarL == curBar => storeOB again if needed")
-                    f_storeOB(False, topOB, bottomOB, current_time)
-        else:
-            logger.warning("[f_zoneChocDown] => current_row is None while waitingForLH")
-
-    # ถ้ายังรอ LH อยู่แต่เจอ LL ต่อเนื่อง หรือเงื่อนไขอื่น ๆ
-    if waitingForLH and curS == "LL" and prevS == "LL":
-        isMajor = False
-        waitingForLH = False
-        con1 = False
-        con2 = False
-        logger.info("[f_zoneChocDown] => waitingForLH but got LL => reset everything")
-
-    # ถ้าเป็น Major อยู่แต่โดน HH => invalidated
-    if isMajor and curS == "HH":
-        isMajor = False
-        waitingForLH = False
-        logger.info(f"[f_zoneChocDown] => Major ChocDown invalidated due to HH => {curS}")
-
-    # ถ้าไม่ใช่ zoneChocDown => reset
-    if not zoneChocDown:
-        count = 0
-        isMajor = False
-        con1 = False
-        con2 = False
-
-    logger.debug(f"[f_zoneChocDown] => END at time {current_time}, isMajor={isMajor}, waitingForLH={waitingForLH}")
-    return isMajor
 
 
 
@@ -765,7 +592,8 @@ def main():
     global isBosUp, isBosDn, isCocUp, isCocDn
     try:
         df = load_ohlcv("15m.csv")
-        if len(df) == 0:
+        print(df)
+        if df is None  or len(df) == 0:
             logger.error("Empty DataFrame loaded")
             return
         first_row = df.iloc[0]
